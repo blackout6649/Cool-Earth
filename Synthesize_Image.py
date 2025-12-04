@@ -285,7 +285,7 @@ if __name__ == "__main__":
     else:
         # Single Run Mode (Legacy)
         q_orion = [-0.704416026, 0.061628417, 0.0, 0.707106781]
-        fits_path = generate_raw_star_image(q_orion, filename="orion_test.fits", base_flux=BASE_FLUX, psf_sigma=PSF_SIGMA)
+        fits_path = generate_raw_star_image(q_orion, filename="Single_Scenario.fits", base_flux=BASE_FLUX, psf_sigma=PSF_SIGMA)
         final_image = apply_image_effects(fits_path, params=EFFECTS)
         hdu = fits.PrimaryHDU(final_image)
         hdu.writeto(fits_path, overwrite=True)
