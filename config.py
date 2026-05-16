@@ -14,10 +14,13 @@ IMG_RES = 1024
 # Distortion [k1, k2, p1, p2, k3]
 DISTORTION_COEFFS = [0.023, 0.002, 0.8, 0.05, 0]
 MAX_MAGNITUDE = 9
+SYNTH_PSF_SIGMA = 0.1  # For synthetic image generation (if needed)
+
 # --- Time ---
-# J2000 epoch + seconds
-J2000_EPOCH = datetime(2000, 1, 1, 12, 0, 0) + timedelta(seconds=757339269.184)
-OBSERVATION_DATE = J2000_EPOCH + timedelta(seconds=757339269.184)
+# J2000 epoch and observation offset in seconds
+J2000_EPOCH = datetime(2000, 1, 1, 12, 0, 0)
+OBSERVATION_SECONDS = 757339269.184
+OBSERVATION_DATE = J2000_EPOCH + timedelta(seconds=OBSERVATION_SECONDS)
 
 # --- Paths ---
 # Use relative paths so it works on any computer

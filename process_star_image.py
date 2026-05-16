@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 import sys
 import traceback
 import matplotlib.pyplot as plt
+import os
+import config
 
 # GIANT Imports
 from giant.camera import Camera
@@ -118,7 +120,7 @@ def main():
     # =========================================================================
     # 2. Load Image & Time
     # =========================================================================
-    image_path = '.\data\images\scene_002.fits'
+    image_path = os.path.join(config.IMAGE_DIR, 'Scenario_02.fits')
     j2000_epoch = datetime(2000, 1, 1, 12, 0, 0)
     obs_time = j2000_epoch + timedelta(seconds=757339269.184)
 

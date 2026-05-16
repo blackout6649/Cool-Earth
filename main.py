@@ -53,9 +53,27 @@ def main():
 
             if success:
                 solved_q = opnav_img.rotation_inertial_to_camera.quaternion
-                dist = np.linalg.norm(np.array(truth_q) - np.array(solved_q))
+                truth_q_arr = np.array(truth_q, dtype=float)
+                solved_q_arr = np.array(solved_q, dtype=float)
+
+                truth_q_arr = truth_q_arr / np.linalg.norm(truth_q_arr)
+                solved_q_arr = solved_q_arr / np.linalg.norm(solved_q_arr)
+
+                # Calculate the dot product
+                dot_product = np.dot(truth_q_arr, solved_q_arr)
+                
+                # Clip to [-1.0, 1.0] to prevent NaN errors in arccos due to floating-point precision limits
+                dot_product = np.clip(dot_product, -1.0, 1.0)
+                
+                # Calculate the principal rotation angle in radians
+                # The absolute value handles the q and -q ambiguity
+                error_rad = 2 * np.arccos(np.abs(dot_product))
+                
+                # Convert to degrees
+                error_deg = np.degrees(error_rad)
+
                 print(f"   [SUCCESS] Solved Q: {np.round(solved_q, 4)}")
-                print(f"   [METRIC]  Error: {dist:.6f}")
+                print(f"   [METRIC]  Error: {error_deg:.6f}°")
             else:
                 print("   [FAILURE] Could not determine attitude.")
 

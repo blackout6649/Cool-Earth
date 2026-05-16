@@ -32,16 +32,18 @@ if not os.path.exists(SAVE_DIR):
 # =============================================================================
 # PART 1: CREATE & SAVE (The Generator)
 # =============================================================================
-def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits", base_flux=10000.0, psf_sigma=1.0):
+def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits"):
     """
     Generates a star image from a quaternion and saves it as a FITS file.
     """
     print(f"--- Generating Raw FITS for Q={np.round(target_quaternion, 3)} ---")
 
-    # A. Setup Camera (Zero distortion)
+    # A. Setup Camera (match processing model parameters)
+    k1, k2, p1, p2, k3 = config.DISTORTION_COEFFS
     model = BrownModel(
         kx=config.CAM_FOCAL_LENGTH, ky=config.CAM_FOCAL_LENGTH,
         px=config.CAM_CENTER_X, py=config.CAM_CENTER_Y,
+        k1=k1, k2=k2, k3=k3, p1=p1, p2=p2,
         n_rows=config.IMG_RES, n_cols=config.IMG_RES
     )
     camera_obj = Camera(model=model, name='Synth_Cam')
@@ -58,6 +60,7 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits",
     # D. Run Identification (Math only)
     opts = StellarOpNavOptions()
     opts.star_id_options.catalog = Gaia()
+    opts.star_id_options.max_magnitude = config.MAX_MAGNITUDE
 
     sopnav = StellarOpNav(camera_obj, options=opts)
     sopnav.add_images([opnav_image])
@@ -73,28 +76,51 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits",
 
     synth_image = np.zeros((config.IMG_RES, config.IMG_RES), dtype=np.float32)
 
-    if projected_points is not None and star_records is not None and len(projected_points) > 0:
+    if (
+        projected_points is not None and
+        star_records is not None and
+        getattr(projected_points, 'ndim', 0) == 2 and
+        projected_points.shape[1] > 0
+    ):
         xs = projected_points[0, :]
         ys = projected_points[1, :]
         mags = star_records['mag'].values
 
-        print(f"   Rendering {len(xs)} stars...")
+        print(f"   Rendering {len(xs)} stars with subpixel PSF...")
+
+        # PSF parameters
+        psf_sigma = getattr(config, 'SYNTH_PSF_SIGMA', 0.1)  # px, fallback to 0.1 if not in config
+        psf_half_size = int(np.ceil(3 * psf_sigma))  # truncate at 3 sigma
 
         for x, y, mag in zip(xs, ys, mags):
             if 0 <= x < config.IMG_RES and 0 <= y < config.IMG_RES:
-                flux = base_flux * (10 ** (-0.4 * mag))
+                flux = float(10 ** (-0.4 * mag))
+                # Subpixel-centered PSF
+                x0 = x
+                y0 = y
+                x_min = max(0, int(np.floor(x0 - psf_half_size)))
+                x_max = min(config.IMG_RES, int(np.ceil(x0 + psf_half_size + 1)))
+                y_min = max(0, int(np.floor(y0 - psf_half_size)))
+                y_max = min(config.IMG_RES, int(np.ceil(y0 + psf_half_size + 1)))
 
-                # Draw Gaussian Spot
-                rad = int(psf_sigma * 3)
-                x_min, x_max = max(0, int(x)-rad), min(config.IMG_RES, int(x)+rad+1)
-                y_min, y_max = max(0, int(y)-rad), min(config.IMG_RES, int(y)+rad+1)
-
-                if x_max > x_min and y_max > y_min:
-                    yy, xx = np.mgrid[y_min:y_max, x_min:x_max]
-                    spot = flux * np.exp(-((xx - x)**2 + (yy - y)**2) / (2 * psf_sigma**2))
-                    synth_image[y_min:y_max, x_min:x_max] += spot
+                x_grid, y_grid = np.meshgrid(
+                    np.arange(x_min, x_max),
+                    np.arange(y_min, y_max)
+                )
+                psf = np.exp(-((x_grid - x0) ** 2 + (y_grid - y0) ** 2) / (2 * psf_sigma ** 2))
+                psf_sum = np.sum(psf)
+                if psf_sum > 0:
+                    psf *= flux / psf_sum  # Normalize PSF to star flux
+                    synth_image[y_min:y_max, x_min:x_max] += psf
     else:
         print("   No stars projected into FOV - saving blank image.")
+
+    # Scale deterministic synthetic image to uint16 sensor-like range.
+    max_val = float(np.max(synth_image))
+    if max_val > 0:
+        synth_image = (synth_image / max_val * 65535.0).astype(np.uint16)
+    else:
+        synth_image = synth_image.astype(np.uint16)
 
     # G. Save FITS with Header
     save_path = os.path.join(SAVE_DIR, filename)
@@ -113,44 +139,7 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits",
     return save_path
 
 # =============================================================================
-# PART 2: POST-PROCESS (The Modifier)
-# =============================================================================
-def apply_image_effects(image_path, params=None):
-    """
-    Loads FITS, applies effects, returns NumPy array.
-    """
-    if params is None:
-        params = {}
-
-    print("--- Applying Image Effects ---")
-
-    # Load FITS data
-    with fits.open(image_path) as hdul:
-        image = hdul[0].data.astype(np.float64)
-
-    # Optional Effects
-    if 'background' in params:
-        # print(f"   Adding DC bias ({params['background']})")
-        image += params['background']
-
-    if 'noise' in params:
-        # print(f"   Applying Gaussian noise (sigma={params['noise']})")
-        noise = np.random.normal(0, params['noise'], image.shape)
-        image += noise
-
-    # Clip to positive
-    image = np.clip(image, 0, None)
-
-    # Scale to uint16 for better GIANT compatibility (simulate camera bit depth)
-    max_val = np.max(image)
-    if max_val > 0:
-        image = (image / max_val * 65535).astype(np.uint16)
-    else:
-        image = image.astype(np.uint16)
-    return image
-
-# =============================================================================
-# PART 3: VISUALIZE (The Viewer)
+# PART 2: VISUALIZE (The Viewer)
 # =============================================================================
 def visualize_result(image_data, quaternion):
     """
@@ -212,7 +201,7 @@ def visualize_result(image_data, quaternion):
 # =============================================================================
 # PART 4: BATCH PROCESSING (CSV Loader)
 # =============================================================================
-def run_batch_from_csv(csv_path, base_flux, psf_sigma, effects):
+def run_batch_from_csv(csv_path):
     """
     Reads a CSV file and generates an image for every row.
     """
@@ -241,19 +230,8 @@ def run_batch_from_csv(csv_path, base_flux, psf_sigma, effects):
 
             print(f"Processing Scene {count+1}: {filename}")
 
-            # 1. Generate Raw
-            fits_path = generate_raw_star_image(q, filename=filename, base_flux=base_flux, psf_sigma=psf_sigma)
-
-            # 2. Post Process
-            final_image = apply_image_effects(fits_path, params=effects)
-
-            # 3. Save Final (Overwrite raw with processed)
-            # Read header from raw to preserve metadata
-            with fits.open(fits_path) as hdul_raw:
-                raw_header = hdul_raw[0].header
-
-            hdu = fits.PrimaryHDU(final_image, header=raw_header)
-            hdu.writeto(fits_path, overwrite=True)
+            # Generate directly from configured synthetic parameters without post effects.
+            generate_raw_star_image(q, filename=filename)
 
             count += 1
 
@@ -263,11 +241,6 @@ def run_batch_from_csv(csv_path, base_flux, psf_sigma, effects):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    # --- GLOBAL SETTINGS ---
-    BASE_FLUX = 20000.0
-    PSF_SIGMA = 1.5
-    EFFECTS = {'background': 20.0, 'noise': 1.0}
-
     # --- MODE SELECTION ---
     # Set this to True to run the batch from CSV, False to run single test
     RUN_BATCH_MODE = True
@@ -280,13 +253,12 @@ if __name__ == "__main__":
         if not os.path.exists(CSV_PATH):
             print("CSV not found, please create 'scenarios.csv' or ensure it exists.")
         else:
-            run_batch_from_csv(CSV_PATH, BASE_FLUX, PSF_SIGMA, EFFECTS)
+            run_batch_from_csv(CSV_PATH)
 
     else:
         # Single Run Mode (Legacy)
         q_orion = [-0.704416026, 0.061628417, 0.0, 0.707106781]
-        fits_path = generate_raw_star_image(q_orion, filename="Single_Scenario.fits", base_flux=BASE_FLUX, psf_sigma=PSF_SIGMA)
-        final_image = apply_image_effects(fits_path, params=EFFECTS)
-        hdu = fits.PrimaryHDU(final_image)
-        hdu.writeto(fits_path, overwrite=True)
-        visualize_result(final_image, q_orion)
+        fits_path = generate_raw_star_image(q_orion, filename="Single_Scenario.fits")
+        with fits.open(fits_path) as hdul:
+            image_data = hdul[0].data
+        visualize_result(image_data, q_orion)

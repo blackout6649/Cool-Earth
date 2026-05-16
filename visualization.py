@@ -52,7 +52,7 @@ def plot_star_id_results(opnav_image, sopnav, title_suffix=""):
 
     # 5. Plot Matches (Green Plus & Connectors)
     # These are the detections that successfully paired with a catalog star
-    if matched_ex is not None and matched_ex.size > 0:
+    if matched_ex is not None and matched_cat is not None and matched_ex.size > 0 and matched_cat.size > 0:
         plt.scatter(matched_ex[0, :], matched_ex[1, :],
                     c='lime', marker='+', s=120, label='Matched', linewidth=2)
 

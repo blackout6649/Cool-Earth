@@ -34,6 +34,11 @@ def process_image_file(filepath, initial_guess_q):
         ky=config.CAM_FOCAL_LENGTH,
         px=config.CAM_CENTER_X,
         py=config.CAM_CENTER_Y,
+        k1=k1,
+        k2=k2,
+        k3=k3,
+        p1=p1,
+        p2=p2,
         n_rows=config.IMG_RES,
         n_cols=config.IMG_RES
     )
@@ -60,6 +65,7 @@ def process_image_file(filepath, initial_guess_q):
     sopnav_options = StellarOpNavOptions()
     try:
         sopnav_options.star_id_options.catalog = Gaia()
+        sopnav_options.star_id_options.max_magnitude = config.MAX_MAGNITUDE
     except Exception as e:
         print(f" [ERROR] Catalog Init Failed: {e}")
         return opnav_image, None, False
@@ -68,9 +74,9 @@ def process_image_file(filepath, initial_guess_q):
     sopnav.add_images([opnav_image])
 
     # --- TUNING (Matching your working script) ---
-    sopnav.star_id.max_magnitude = 9
-    sopnav.star_id.ransac_tolerance = 10.0
-    sopnav.star_id.max_combos = 0
+    sopnav.star_id.max_magnitude = config.MAX_MAGNITUDE
+    #sopnav.star_id.ransac_tolerance = 10.0
+    #sopnav.star_id.max_combos = 0
     #sopnav.star_id.tolerance = 200.0 # Uncomment if needed later
 
     # 5. Run Processing
