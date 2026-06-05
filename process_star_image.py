@@ -1,14 +1,16 @@
 import numpy as np
 from datetime import datetime, timedelta
+import csv
 import sys
 import traceback
 import matplotlib.pyplot as plt
 import os
 import config
+from astropy.io import fits
 
 # GIANT Imports
 from giant.camera import Camera
-from giant.camera_models import PinholeModel, BrownModel
+from giant.camera_models import BrownModel
 from giant.image import OpNavImage
 from giant.stellar_opnav.stellar_class import StellarOpNav, StellarOpNavOptions
 from giant.catalogs.gaia import Gaia
@@ -30,6 +32,99 @@ def safe_get_count(points_array):
                 return 1
             return 0
     return 0
+
+
+def _normalize_quaternion(q):
+    q_arr = np.asarray(q, dtype=float).reshape(-1)
+    if q_arr.size != 4:
+        raise ValueError(f"Quaternion must have 4 elements, got {q_arr.size}")
+    n = np.linalg.norm(q_arr)
+    if n <= 0:
+        raise ValueError("Quaternion norm must be > 0")
+    return q_arr / n
+
+
+def _attitude_error_deg(q_est, q_gt):
+    """Return principal angle between two quaternions (deg), sign-invariant."""
+    q_est_n = _normalize_quaternion(q_est)
+    q_gt_n = _normalize_quaternion(q_gt)
+    dot = float(np.clip(np.abs(np.dot(q_est_n, q_gt_n)), -1.0, 1.0))
+    return float(np.degrees(2.0 * np.arccos(dot)))
+
+
+def _read_gt_quaternion_from_fits_header(path):
+    if not path:
+        return None
+    if not os.path.exists(path):
+        return None
+
+    with fits.open(path) as hdul:
+        hdr = hdul[0].header
+
+    keys = ("Q_X", "Q_Y", "Q_Z", "Q_W")
+    if not all(k in hdr for k in keys):
+        return None
+
+    return [float(hdr["Q_X"]), float(hdr["Q_Y"]), float(hdr["Q_Z"]), float(hdr["Q_W"])]
+
+
+def _resolve_gt_quaternion():
+    configured_gt = getattr(config, 'PROC_GT_QUATERNION', None)
+    if configured_gt is not None:
+        return _normalize_quaternion(configured_gt), 'config.PROC_GT_QUATERNION'
+
+    gt_path = getattr(config, 'PROC_GT_IMAGE_PATH', getattr(config, 'DISPLAY_IMAGE_PATH', None))
+    gt_from_header = _read_gt_quaternion_from_fits_header(gt_path)
+    if gt_from_header is not None:
+        return _normalize_quaternion(gt_from_header), f'FITS header ({gt_path})'
+
+    return None, None
+
+
+def _load_scenario_quaternions(csv_path):
+    if not csv_path or not os.path.exists(csv_path):
+        return {}
+
+    out = {}
+    with open(csv_path, 'r', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                fname = row['filename'].strip()
+                q = _normalize_quaternion([
+                    float(row['qx']),
+                    float(row['qy']),
+                    float(row['qz']),
+                    float(row['qw']),
+                ])
+            except Exception:
+                continue
+            out[fname] = q
+    return out
+
+
+def _resolve_initial_quaternion(process_image_path):
+    use_csv = bool(getattr(config, 'PROC_USE_SCENARIO_CSV_INITIAL_QUAT', False))
+    if use_csv:
+        scenario_csv = getattr(config, 'PROC_SCENARIO_CSV', getattr(config, 'TRUTH_FILE', None))
+        scenario_quats = _load_scenario_quaternions(scenario_csv)
+        if scenario_quats:
+            explicit_name = getattr(config, 'PROC_SCENARIO_FILENAME', None)
+            if explicit_name and explicit_name in scenario_quats:
+                return scenario_quats[explicit_name], f'scenarios.csv explicit key: {explicit_name}'
+
+            image_base = os.path.basename(process_image_path).lower()
+            candidates = []
+            for scenario_fname, q in scenario_quats.items():
+                scenario_stem = os.path.splitext(scenario_fname)[0].lower()
+                if scenario_stem and scenario_stem in image_base:
+                    candidates.append((scenario_fname, q))
+
+            if len(candidates) == 1:
+                return candidates[0][1], f'scenarios.csv inferred from image name: {candidates[0][0]}'
+
+    fallback = getattr(config, 'PROC_INITIAL_QUATERNION', [-0.704416026, 0.061628417, 0.0, 0.707106781])
+    return _normalize_quaternion(fallback), 'config.PROC_INITIAL_QUATERNION'
 
 
 # =========================================================================
@@ -100,16 +195,19 @@ def main():
     # =========================================================================
     # 1. Setup Camera Model
     # =========================================================================
-    effective_focal_length_pixels = 14774.74
-
-    # Note: Usually you only need one model. BrownModel overwrites PinholeModel here.
+    k1, k2, p1, p2, k3 = getattr(config, 'PROC_DISTORTION_COEFFS', [0.0, 0.0, 0.0, 0.0, 0.0])
     model = BrownModel(
-        kx=effective_focal_length_pixels,
-        ky=effective_focal_length_pixels,
-        px=511.5,
-        py=511.5,
-        n_rows=1024,
-        n_cols=1024
+        kx=getattr(config, 'PROC_CAM_FOCAL_LENGTH_PX', 14774.74),
+        ky=getattr(config, 'PROC_CAM_FOCAL_LENGTH_PX', 14774.74),
+        px=getattr(config, 'PROC_CAM_CENTER_X', 511.5),
+        py=getattr(config, 'PROC_CAM_CENTER_Y', 511.5),
+        k1=k1,
+        k2=k2,
+        k3=k3,
+        p1=p1,
+        p2=p2,
+        n_rows=getattr(config, 'PROC_CAM_N_ROWS', 1024),
+        n_cols=getattr(config, 'PROC_CAM_N_COLS', 1024)
     )
 
     camera_obj = Camera(
@@ -120,9 +218,8 @@ def main():
     # =========================================================================
     # 2. Load Image & Time
     # =========================================================================
-    image_path = os.path.join(config.IMAGE_DIR, 'Scenario_02.fits')
-    j2000_epoch = datetime(2000, 1, 1, 12, 0, 0)
-    obs_time = j2000_epoch + timedelta(seconds=757339269.184)
+    image_path = getattr(config, 'PROCESS_IMAGE_PATH', os.path.join(config.IMAGE_DIR, 'Scenario_02.fits'))
+    obs_time = getattr(config, 'OBSERVATION_DATE', datetime(2000, 1, 1, 12, 0, 0) + timedelta(seconds=757339269.184))
 
     print(f"Loading image: {image_path}")
     try:
@@ -132,7 +229,8 @@ def main():
         return
 
     # --- A Priori Attitude Setup ---
-    initial_quaternion = [-0.704416026, 0.061628417, 0.000000000, 0.707106781]
+    initial_quaternion, init_source = _resolve_initial_quaternion(image_path)
+    print(f"A Priori Attitude Source: {init_source}")
     print(f"A Priori Attitude: {initial_quaternion}")
     opnav_image.rotation_inertial_to_camera = Rotation(initial_quaternion)
 
@@ -149,11 +247,34 @@ def main():
     sopnav = StellarOpNav(camera_obj, options=sopnav_options)
     sopnav.add_images([opnav_image])
 
+    # --- POINT EXTRACTION TUNING (critical for noisy captured images) ---
+    sopnav.point_of_interest_finder.threshold = float(getattr(config, 'PROC_POI_THRESHOLD', 8.0))
+    sopnav.point_of_interest_finder.min_size = int(getattr(config, 'PROC_POI_MIN_SIZE', 2))
+    sopnav.point_of_interest_finder.max_size = int(getattr(config, 'PROC_POI_MAX_SIZE', 50))
+    sopnav.point_of_interest_finder.centroid_size = int(getattr(config, 'PROC_POI_CENTROID_SIZE', 1))
+    sopnav.point_of_interest_finder.reject_saturation = bool(getattr(config, 'PROC_POI_REJECT_SATURATION', True))
+
     # --- TUNING ---
-    sopnav.star_id.max_magnitude = 10.0
-    # sopnav.star_id.tolerance = 200.0 # Uncomment if large offset expected
-    sopnav.star_id.ransac_tolerance = 10.0
-    sopnav.star_id.max_combos = 0
+    sopnav.star_id.max_magnitude = float(getattr(config, 'PROC_MAX_MAGNITUDE', 10.0))
+    sopnav.star_id.tolerance = float(getattr(config, 'PROC_STARID_TOLERANCE', 20.0))
+    sopnav.star_id.ransac_tolerance = float(getattr(config, 'PROC_RANSAC_TOLERANCE', 10.0))
+    sopnav.star_id.max_combos = int(getattr(config, 'PROC_MAX_COMBOS', 0))
+
+    print(
+        "POI tuning: "
+        f"threshold={sopnav.point_of_interest_finder.threshold}, "
+        f"min_size={sopnav.point_of_interest_finder.min_size}, "
+        f"max_size={sopnav.point_of_interest_finder.max_size}, "
+        f"centroid_size={sopnav.point_of_interest_finder.centroid_size}, "
+        f"reject_saturation={sopnav.point_of_interest_finder.reject_saturation}"
+    )
+    print(
+        "Star-ID tuning: "
+        f"max_magnitude={sopnav.star_id.max_magnitude}, "
+        f"tolerance={sopnav.star_id.tolerance}, "
+        f"ransac_tolerance={sopnav.star_id.ransac_tolerance}, "
+        f"max_combos={sopnav.star_id.max_combos}"
+    )
 
     print("\n--- Starting Processing ---")
 
@@ -171,14 +292,19 @@ def main():
 
         # --- VISUALIZATION CALL ---
         print("Generating visual comparison...")
-        plot_results(opnav_image, sopnav)
+        plot_results(
+            opnav_image,
+            sopnav,
+            img_width=int(getattr(config, 'PROC_CAM_N_COLS', 1024)),
+            img_height=int(getattr(config, 'PROC_CAM_N_ROWS', 1024)),
+        )
         # --------------------------
 
         num_cat_in_fov = 0
         if projected_catalog is not None and projected_catalog.ndim == 2:
             in_fov_mask = (
-                    (projected_catalog[0, :] >= 0) & (projected_catalog[0, :] <= 1024) &
-                    (projected_catalog[1, :] >= 0) & (projected_catalog[1, :] <= 1024)
+                    (projected_catalog[0, :] >= 0) & (projected_catalog[0, :] <= getattr(config, 'PROC_CAM_N_COLS', 1024)) &
+                    (projected_catalog[1, :] >= 0) & (projected_catalog[1, :] <= getattr(config, 'PROC_CAM_N_ROWS', 1024))
             )
             num_cat_in_fov = np.sum(in_fov_mask)
             projected_catalog_in_fov = projected_catalog[:, in_fov_mask]
@@ -210,6 +336,17 @@ def main():
         if opnav_image.pointing_post_fit:
             q = opnav_image.rotation_inertial_to_camera.quaternion
             print(f"Refined Quaternion: {q}")
+
+            if bool(getattr(config, 'PROC_REPORT_ATTITUDE_ERROR', True)):
+                q_gt, gt_source = _resolve_gt_quaternion()
+                if q_gt is None:
+                    print("[INFO] Ground truth quaternion not available; skipping attitude error report.")
+                    print("       Set config.PROC_GT_QUATERNION or ensure Q_X/Q_Y/Q_Z/Q_W in config.PROC_GT_IMAGE_PATH FITS header.")
+                else:
+                    err_deg = _attitude_error_deg(q, q_gt)
+                    err_arcmin = err_deg * 60.0
+                    print(f"Ground Truth Quaternion ({gt_source}): {q_gt}")
+                    print(f"Attitude Error: {err_deg:.6f} deg ({err_arcmin:.3f} arcmin)")
         else:
             print("\n[ERROR] Attitude estimation failed.")
 
@@ -218,4 +355,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    mode = str(getattr(config, 'PROC_MODE', 'single')).strip().lower()
+    if mode == 'batch':
+        import batch_attitude_analysis
+        batch_attitude_analysis.main()
+    else:
+        main()

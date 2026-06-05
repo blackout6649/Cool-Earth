@@ -29,6 +29,9 @@ SAVE_DIR = os.path.join(config.DATA_DIR, 'generated')
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 
+SYNTH_W = int(getattr(config, 'SYNTH_IMAGE_WIDTH', getattr(config, 'IMG_RES', 1024)))
+SYNTH_H = int(getattr(config, 'SYNTH_IMAGE_HEIGHT', getattr(config, 'IMG_RES', 1024)))
+
 # =============================================================================
 # PART 1: CREATE & SAVE (The Generator)
 # =============================================================================
@@ -39,19 +42,21 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits")
     print(f"--- Generating Raw FITS for Q={np.round(target_quaternion, 3)} ---")
 
     # A. Setup Camera (match processing model parameters)
-    k1, k2, p1, p2, k3 = config.DISTORTION_COEFFS
+    k1, k2, p1, p2, k3 = getattr(config, 'SYNTH_DISTORTION_COEFFS', config.DISTORTION_COEFFS)
     model = BrownModel(
-        kx=config.CAM_FOCAL_LENGTH, ky=config.CAM_FOCAL_LENGTH,
-        px=config.CAM_CENTER_X, py=config.CAM_CENTER_Y,
+        kx=getattr(config, 'SYNTH_CAM_FOCAL_LENGTH_PX', config.CAM_FOCAL_LENGTH),
+        ky=getattr(config, 'SYNTH_CAM_FOCAL_LENGTH_PX', config.CAM_FOCAL_LENGTH),
+        px=getattr(config, 'SYNTH_CAM_CENTER_X', config.CAM_CENTER_X),
+        py=getattr(config, 'SYNTH_CAM_CENTER_Y', config.CAM_CENTER_Y),
         k1=k1, k2=k2, k3=k3, p1=p1, p2=p2,
-        n_rows=config.IMG_RES, n_cols=config.IMG_RES
+        n_rows=SYNTH_H, n_cols=SYNTH_W
     )
     camera_obj = Camera(model=model, name='Synth_Cam')
 
     # B. Dummy File Trick (Required for GIANT memory init)
     temp_dummy = "temp_dummy_black.fits"
     if not os.path.exists(temp_dummy):
-        fits.writeto(temp_dummy, np.zeros((config.IMG_RES, config.IMG_RES), dtype=np.uint8), overwrite=True)
+        fits.writeto(temp_dummy, np.zeros((SYNTH_H, SYNTH_W), dtype=np.uint8), overwrite=True)
 
     # C. Initialize GIANT
     opnav_image = OpNavImage(temp_dummy, observation_date=config.OBSERVATION_DATE)
@@ -60,13 +65,13 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits")
     # D. Run Identification (Math only)
     opts = StellarOpNavOptions()
     opts.star_id_options.catalog = Gaia()
-    opts.star_id_options.max_magnitude = config.MAX_MAGNITUDE
+    opts.star_id_options.max_magnitude = getattr(config, 'SYNTH_MAX_MAGNITUDE', config.MAX_MAGNITUDE)
 
     sopnav = StellarOpNav(camera_obj, options=opts)
     sopnav.add_images([opnav_image])
 
     # See dimmer stars
-    sopnav.star_id.max_magnitude = config.MAX_MAGNITUDE
+    sopnav.star_id.max_magnitude = getattr(config, 'SYNTH_MAX_MAGNITUDE', config.MAX_MAGNITUDE)
 
     sopnav.id_stars()
 
@@ -74,7 +79,7 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits")
     projected_points = sopnav.queried_catalog_image_points[0]
     star_records = sopnav.queried_catalog_star_records[0]
 
-    synth_image = np.zeros((config.IMG_RES, config.IMG_RES), dtype=np.float32)
+    synth_image = np.zeros((SYNTH_H, SYNTH_W), dtype=np.float32)
 
     if (
         projected_points is not None and
@@ -93,15 +98,15 @@ def generate_raw_star_image(target_quaternion, filename="synth_star_field.fits")
         psf_half_size = int(np.ceil(3 * psf_sigma))  # truncate at 3 sigma
 
         for x, y, mag in zip(xs, ys, mags):
-            if 0 <= x < config.IMG_RES and 0 <= y < config.IMG_RES:
+            if 0 <= x < SYNTH_W and 0 <= y < SYNTH_H:
                 flux = float(10 ** (-0.4 * mag))
                 # Subpixel-centered PSF
                 x0 = x
                 y0 = y
                 x_min = max(0, int(np.floor(x0 - psf_half_size)))
-                x_max = min(config.IMG_RES, int(np.ceil(x0 + psf_half_size + 1)))
+                x_max = min(SYNTH_W, int(np.ceil(x0 + psf_half_size + 1)))
                 y_min = max(0, int(np.floor(y0 - psf_half_size)))
-                y_max = min(config.IMG_RES, int(np.ceil(y0 + psf_half_size + 1)))
+                y_max = min(SYNTH_H, int(np.ceil(y0 + psf_half_size + 1)))
 
                 x_grid, y_grid = np.meshgrid(
                     np.arange(x_min, x_max),
@@ -149,16 +154,18 @@ def visualize_result(image_data, quaternion):
 
     # 1. Re-Calculate Star Positions from Quaternion
     model = BrownModel(
-        kx=config.CAM_FOCAL_LENGTH, ky=config.CAM_FOCAL_LENGTH,
-        px=config.CAM_CENTER_X, py=config.CAM_CENTER_Y,
-        n_rows=config.IMG_RES, n_cols=config.IMG_RES
+        kx=getattr(config, 'SYNTH_CAM_FOCAL_LENGTH_PX', config.CAM_FOCAL_LENGTH),
+        ky=getattr(config, 'SYNTH_CAM_FOCAL_LENGTH_PX', config.CAM_FOCAL_LENGTH),
+        px=getattr(config, 'SYNTH_CAM_CENTER_X', config.CAM_CENTER_X),
+        py=getattr(config, 'SYNTH_CAM_CENTER_Y', config.CAM_CENTER_Y),
+        n_rows=SYNTH_H, n_cols=SYNTH_W
     )
     camera_obj = Camera(model=model, name='Vis_Cam')
 
     # Reuse dummy file for init
     temp_dummy = "temp_dummy_black.fits"
     if not os.path.exists(temp_dummy):
-        fits.writeto(temp_dummy, np.zeros((config.IMG_RES, config.IMG_RES), dtype=np.uint8), overwrite=True)
+        fits.writeto(temp_dummy, np.zeros((SYNTH_H, SYNTH_W), dtype=np.uint8), overwrite=True)
 
     opnav_image = OpNavImage(temp_dummy, observation_date=config.OBSERVATION_DATE)
     opnav_image.rotation_inertial_to_camera = Rotation(quaternion)
@@ -166,7 +173,7 @@ def visualize_result(image_data, quaternion):
     sopnav = StellarOpNav(camera_obj, options=StellarOpNavOptions())
     sopnav.star_id_options.catalog = Gaia()
     sopnav.add_images([opnav_image])
-    sopnav.star_id.max_magnitude = config.MAX_MAGNITUDE
+    sopnav.star_id.max_magnitude = getattr(config, 'SYNTH_MAX_MAGNITUDE', config.MAX_MAGNITUDE)
     sopnav.id_stars()
 
     cat_points = sopnav.queried_catalog_image_points[0]
@@ -181,8 +188,8 @@ def visualize_result(image_data, quaternion):
     # B. The Blue Circles (Truth)
     if cat_points is not None:
         in_fov = (
-            (cat_points[0, :] >= 0) & (cat_points[0, :] <= config.IMG_RES) &
-            (cat_points[1, :] >= 0) & (cat_points[1, :] <= config.IMG_RES)
+            (cat_points[0, :] >= 0) & (cat_points[0, :] <= SYNTH_W) &
+            (cat_points[1, :] >= 0) & (cat_points[1, :] <= SYNTH_H)
         )
         points = cat_points[:, in_fov]
 
@@ -243,7 +250,7 @@ def run_batch_from_csv(csv_path):
 if __name__ == "__main__":
     # --- MODE SELECTION ---
     # Set this to True to run the batch from CSV, False to run single test
-    RUN_BATCH_MODE = True
+    RUN_BATCH_MODE = False
 
     CSV_FILENAME = "scenarios.csv"
     CSV_PATH = os.path.join(config.DATA_DIR, CSV_FILENAME)
