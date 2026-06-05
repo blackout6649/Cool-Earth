@@ -33,7 +33,6 @@ Synthesize_Image.py        Synthetic star image generator (GIANT catalog project
 display_single_image.py    Monitor presentation (single or slideshow from scenarios.csv)
 process_star_image.py      Star-ID + attitude estimation (single or batch mode)
 batch_attitude_analysis.py Standalone batch evaluator with statistical summary
-giant_processor.py         Legacy GIANT integration layer
 
 data/
   scenarios.csv            Truth scenarios (filename + quaternion)
