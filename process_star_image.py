@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import csv
 import sys
 import traceback
+import warnings
 import matplotlib.pyplot as plt
 import os
 import config
@@ -16,6 +17,35 @@ from giant.stellar_opnav.stellar_class import StellarOpNav, StellarOpNavOptions
 from giant.catalogs.gaia import Gaia
 from giant.rotations import Rotation
 from scipy.spatial.distance import cdist
+
+
+def _configure_warning_filters():
+    suppress_giant_runtime = bool(getattr(config, 'PROC_SUPPRESS_GIANT_RUNTIME_WARNINGS', True))
+    if suppress_giant_runtime:
+        warnings.filterwarnings(
+            'ignore',
+            message=r'overflow encountered.*',
+            category=RuntimeWarning
+        )
+        warnings.filterwarnings(
+            'ignore',
+            message=r'invalid value encountered.*',
+            category=RuntimeWarning
+        )
+        warnings.filterwarnings(
+            'ignore',
+            category=RuntimeWarning,
+            module=r'.*giant\.point_spread_functions\.gaussians'
+        )
+        warnings.filterwarnings(
+            'ignore',
+            category=RuntimeWarning,
+            module=r'.*giant\.point_spread_functions\..*'
+        )
+
+    suppress_all_runtime = bool(getattr(config, 'PROC_SUPPRESS_ALL_RUNTIME_WARNINGS', False))
+    if suppress_all_runtime:
+        warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 
 def safe_get_count(points_array):
@@ -192,6 +222,14 @@ def plot_results(opnav_image, sopnav, img_width=1024, img_height=1024):
 
 
 def main():
+    _configure_warning_filters()
+
+    verbose = bool(getattr(config, 'PROC_VERBOSE', False))
+
+    def _vprint(message):
+        if verbose:
+            print(message)
+
     # =========================================================================
     # 1. Setup Camera Model
     # =========================================================================
@@ -230,8 +268,8 @@ def main():
 
     # --- A Priori Attitude Setup ---
     initial_quaternion, init_source = _resolve_initial_quaternion(image_path)
-    print(f"A Priori Attitude Source: {init_source}")
-    print(f"A Priori Attitude: {initial_quaternion}")
+    _vprint(f"A Priori Attitude Source: {init_source}")
+    _vprint(f"A Priori Attitude: {initial_quaternion}")
     opnav_image.rotation_inertial_to_camera = Rotation(initial_quaternion)
 
     # =========================================================================
@@ -260,7 +298,7 @@ def main():
     sopnav.star_id.ransac_tolerance = float(getattr(config, 'PROC_RANSAC_TOLERANCE', 10.0))
     sopnav.star_id.max_combos = int(getattr(config, 'PROC_MAX_COMBOS', 0))
 
-    print(
+    _vprint(
         "POI tuning: "
         f"threshold={sopnav.point_of_interest_finder.threshold}, "
         f"min_size={sopnav.point_of_interest_finder.min_size}, "
@@ -268,7 +306,7 @@ def main():
         f"centroid_size={sopnav.point_of_interest_finder.centroid_size}, "
         f"reject_saturation={sopnav.point_of_interest_finder.reject_saturation}"
     )
-    print(
+    _vprint(
         "Star-ID tuning: "
         f"max_magnitude={sopnav.star_id.max_magnitude}, "
         f"tolerance={sopnav.star_id.tolerance}, "
@@ -276,10 +314,10 @@ def main():
         f"max_combos={sopnav.star_id.max_combos}"
     )
 
-    print("\n--- Starting Processing ---")
+    _vprint("\n--- Starting Processing ---")
 
     # A. Identify Stars
-    print("1. Identifying stars...")
+    _vprint("1. Identifying stars...")
     try:
         sopnav.id_stars()
 
@@ -291,7 +329,7 @@ def main():
         num_matched = safe_get_count(matched_points)
 
         # --- VISUALIZATION CALL ---
-        print("Generating visual comparison...")
+        _vprint("Generating visual comparison...")
         plot_results(
             opnav_image,
             sopnav,
@@ -309,15 +347,12 @@ def main():
             num_cat_in_fov = np.sum(in_fov_mask)
             projected_catalog_in_fov = projected_catalog[:, in_fov_mask]
 
-        print(f"\n--- DEBUG INFO ---")
-        print(f"Raw spots detected: {num_raw}")
-        print(f"Catalog stars in FOV: {num_cat_in_fov}")
-        print(f"Total Matched Stars: {num_matched}")
+        print(f"Detected spots: {num_raw} | Catalog in FOV: {num_cat_in_fov} | Matched stars: {num_matched}")
 
         # Calculate distances for console output
         if num_raw > 0 and num_cat_in_fov > 0 and raw_points.ndim == 2:
             distances = cdist(raw_points.T, projected_catalog_in_fov.T, metric='euclidean')
-            print(f"Overall min distance: {np.min(distances):.2f} pixels")
+            _vprint(f"Overall min distance: {np.min(distances):.2f} pixels")
 
         if num_matched < 3:
             print("[WARNING] Not enough matched stars.")
@@ -325,11 +360,12 @@ def main():
 
     except Exception as e:
         print(f"[ERROR] Star Identification failed: {e}")
-        traceback.print_exc()
+        if verbose:
+            traceback.print_exc()
         return
 
     # B. Estimate Attitude
-    print("\n2. Estimating Attitude...")
+    _vprint("\n2. Estimating Attitude...")
     try:
         sopnav.estimate_attitude()
 
@@ -355,6 +391,7 @@ def main():
 
 
 if __name__ == "__main__":
+    _configure_warning_filters()
     mode = str(getattr(config, 'PROC_MODE', 'single')).strip().lower()
     if mode == 'batch':
         import batch_attitude_analysis

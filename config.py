@@ -97,6 +97,11 @@ PROC_STARID_TOLERANCE = 25.0
 PROC_RANSAC_TOLERANCE = 20.0
 PROC_MAX_COMBOS = 0
 
+# Console verbosity and warning filtering.
+PROC_VERBOSE = False
+PROC_SUPPRESS_GIANT_RUNTIME_WARNINGS = True
+PROC_SUPPRESS_ALL_RUNTIME_WARNINGS = False
+
 # Point-of-interest extraction tuning for noisy monitor-captured images.
 # threshold is in units of image noise sigma; lower finds more stars.
 PROC_POI_THRESHOLD = 5.0

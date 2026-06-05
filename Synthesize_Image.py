@@ -25,12 +25,40 @@ from giant.rotations import Rotation
 import config
 
 # --- CONFIGURATION ---
-SAVE_DIR = os.path.join(config.DATA_DIR, 'generated')
+SAVE_DIR = getattr(config, 'IMAGE_DIR', os.path.join(config.DATA_DIR, 'generated'))
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 
 SYNTH_W = int(getattr(config, 'SYNTH_IMAGE_WIDTH', getattr(config, 'IMG_RES', 1024)))
 SYNTH_H = int(getattr(config, 'SYNTH_IMAGE_HEIGHT', getattr(config, 'IMG_RES', 1024)))
+
+
+def _warn_if_synth_distortion_enabled():
+    coeffs = getattr(config, 'SYNTH_DISTORTION_COEFFS', [0.0, 0.0, 0.0, 0.0, 0.0])
+    if any(abs(float(c)) > 0.0 for c in coeffs):
+        print("[WARN] SYNTH_DISTORTION_COEFFS is non-zero. For monitor-based GT generation, zeros are recommended.")
+
+
+def _load_quaternion_for_scenario(csv_path, scenario_filename):
+    if not scenario_filename:
+        return None
+    if not os.path.exists(csv_path):
+        return None
+
+    with open(csv_path, 'r', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if (row.get('filename') or '').strip() == scenario_filename:
+                try:
+                    return [
+                        float(row['qx']),
+                        float(row['qy']),
+                        float(row['qz']),
+                        float(row['qw']),
+                    ]
+                except (ValueError, KeyError):
+                    return None
+    return None
 
 # =============================================================================
 # PART 1: CREATE & SAVE (The Generator)
@@ -248,24 +276,25 @@ def run_batch_from_csv(csv_path):
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    # --- MODE SELECTION ---
-    # Set this to True to run the batch from CSV, False to run single test
-    RUN_BATCH_MODE = False
+    _warn_if_synth_distortion_enabled()
 
-    CSV_FILENAME = "scenarios.csv"
-    CSV_PATH = os.path.join(config.DATA_DIR, CSV_FILENAME)
+    mode = str(getattr(config, 'PROC_MODE', 'single')).strip().lower()
+    csv_path = getattr(config, 'TRUTH_FILE', os.path.join(config.DATA_DIR, 'scenarios.csv'))
 
-    if RUN_BATCH_MODE:
-        # Create a sample CSV if it doesn't exist (for demonstration)
-        if not os.path.exists(CSV_PATH):
-            print("CSV not found, please create 'scenarios.csv' or ensure it exists.")
+    if mode == 'batch':
+        if not os.path.exists(csv_path):
+            print(f"CSV not found, expected at: {csv_path}")
         else:
-            run_batch_from_csv(CSV_PATH)
-
+            run_batch_from_csv(csv_path)
     else:
-        # Single Run Mode (Legacy)
-        q_orion = [-0.704416026, 0.061628417, 0.0, 0.707106781]
-        fits_path = generate_raw_star_image(q_orion, filename="Single_Scenario.fits")
+        # Single-image generation for display/capture loop.
+        display_filename = os.path.basename(getattr(config, 'DISPLAY_IMAGE_PATH', 'Single_Scenario.fits'))
+        scenario_key = getattr(config, 'PROC_SCENARIO_FILENAME', None)
+        q_single = _load_quaternion_for_scenario(csv_path, scenario_key)
+        if q_single is None:
+            q_single = list(getattr(config, 'PROC_INITIAL_QUATERNION', [-0.704416026, 0.061628417, 0.0, 0.707106781]))
+
+        fits_path = generate_raw_star_image(q_single, filename=display_filename)
         with fits.open(fits_path) as hdul:
             image_data = hdul[0].data
-        visualize_result(image_data, q_orion)
+        visualize_result(image_data, q_single)
