@@ -1,0 +1,3 @@
+[submodule "giant"]
+    path = giant
+    url = https://github.com/nasa/giant.git
