@@ -82,6 +82,69 @@ def _attitude_error_deg(q_est, q_gt):
     return float(np.degrees(2.0 * np.arccos(dot)))
 
 
+def _quat_conjugate(q):
+    qn = _normalize_quaternion(q)
+    return np.array([-qn[0], -qn[1], -qn[2], qn[3]], dtype=float)
+
+
+def _quat_inverse(q):
+    return _quat_conjugate(q)
+
+
+def _quat_multiply(q1, q2):
+    x1, y1, z1, w1 = _normalize_quaternion(q1)
+    x2, y2, z2, w2 = _normalize_quaternion(q2)
+
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+
+    return _normalize_quaternion([x, y, z, w])
+
+
+def _prompt_yes_no(prompt, default=False):
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    while True:
+        value = input(prompt + suffix).strip().lower()
+        if value == "":
+            return default
+        if value in ("y", "yes"):
+            return True
+        if value in ("n", "no"):
+            return False
+        print("Please enter y or n.")
+
+
+def _prompt_quaternion(prompt):
+    while True:
+        raw = input(prompt).strip()
+        cleaned = raw.replace(",", " ")
+        parts = [p for p in cleaned.split() if p]
+        if len(parts) != 4:
+            print("Enter 4 values in x y z w order, separated by spaces or commas.")
+            continue
+
+        try:
+            q = [float(p) for p in parts]
+            return _normalize_quaternion(q)
+        except Exception as e:
+            print(f"Invalid quaternion: {e}")
+
+
+def _prompt_boresight_quaternion():
+    if not sys.stdin.isatty():
+        return None
+
+    use_boresight = _prompt_yes_no("Apply boresight alignment correction q^C_B?", default=False)
+    if not use_boresight:
+        return None
+
+    q_cb = _prompt_quaternion("Enter q^C_B as x y z w: ")
+    print(f"Using boresight q^C_B: {q_cb}")
+    return q_cb
+
+
 def _read_gt_quaternion_from_fits_header(path):
     if not path:
         return None
@@ -221,7 +284,7 @@ def plot_results(opnav_image, sopnav, img_width=1024, img_height=1024):
     plt.show()
 
 
-def main():
+def main(boresight_q_cb=None):
     _configure_warning_filters()
 
     verbose = bool(getattr(config, 'PROC_VERBOSE', False))
@@ -370,8 +433,14 @@ def main():
         sopnav.estimate_attitude()
 
         if opnav_image.pointing_post_fit:
-            q = opnav_image.rotation_inertial_to_camera.quaternion
-            print(f"Refined Quaternion: {q}")
+            q_ci = _normalize_quaternion(opnav_image.rotation_inertial_to_camera.quaternion)
+            print(f"Refined Quaternion q^C_I: {q_ci}")
+
+            q_bi_corrected = None
+            if boresight_q_cb is not None:
+                q_bi_corrected = _quat_multiply(_quat_inverse(boresight_q_cb), q_ci)
+                print(f"Boresight q^C_B: {boresight_q_cb}")
+                print(f"Corrected Quaternion q^B_I = (q^C_B)^-1 q^C_I: {q_bi_corrected}")
 
             if bool(getattr(config, 'PROC_REPORT_ATTITUDE_ERROR', True)):
                 q_gt, gt_source = _resolve_gt_quaternion()
@@ -379,10 +448,17 @@ def main():
                     print("[INFO] Ground truth quaternion not available; skipping attitude error report.")
                     print("       Set config.PROC_GT_QUATERNION or ensure Q_X/Q_Y/Q_Z/Q_W in config.PROC_GT_IMAGE_PATH FITS header.")
                 else:
-                    err_deg = _attitude_error_deg(q, q_gt)
+                    err_deg = _attitude_error_deg(q_ci, q_gt)
                     err_arcmin = err_deg * 60.0
                     print(f"Ground Truth Quaternion ({gt_source}): {q_gt}")
-                    print(f"Attitude Error: {err_deg:.6f} deg ({err_arcmin:.3f} arcmin)")
+                    print(f"Camera-vs-GT Error: {err_deg:.6f} deg ({err_arcmin:.3f} arcmin)")
+                    if q_bi_corrected is not None:
+                        corrected_err_deg = _attitude_error_deg(q_bi_corrected, q_gt)
+                        corrected_err_arcmin = corrected_err_deg * 60.0
+                        print(
+                            f"Corrected Body-vs-GT Error: {corrected_err_deg:.6f} deg "
+                            f"({corrected_err_arcmin:.3f} arcmin)"
+                        )
         else:
             print("\n[ERROR] Attitude estimation failed.")
 
@@ -392,9 +468,10 @@ def main():
 
 if __name__ == "__main__":
     _configure_warning_filters()
+    boresight_q_cb = _prompt_boresight_quaternion()
     mode = str(getattr(config, 'PROC_MODE', 'single')).strip().lower()
     if mode == 'batch':
         import batch_attitude_analysis
-        batch_attitude_analysis.main()
+        batch_attitude_analysis.main(boresight_q_cb=boresight_q_cb)
     else:
-        main()
+        main(boresight_q_cb=boresight_q_cb)

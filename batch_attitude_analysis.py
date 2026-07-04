@@ -32,6 +32,27 @@ def _attitude_error_deg(q_est, q_gt):
     return float(np.degrees(2.0 * np.arccos(dot)))
 
 
+def _quat_conjugate(q):
+    qn = _normalize_quaternion(q)
+    return np.array([-qn[0], -qn[1], -qn[2], qn[3]], dtype=float)
+
+
+def _quat_inverse(q):
+    return _quat_conjugate(q)
+
+
+def _quat_multiply(q1, q2):
+    x1, y1, z1, w1 = _normalize_quaternion(q1)
+    x2, y2, z2, w2 = _normalize_quaternion(q2)
+
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+
+    return _normalize_quaternion([x, y, z, w])
+
+
 def _safe_count(points_array):
     if points_array is None:
         return 0
@@ -95,7 +116,7 @@ def _resolve_capture_path(row):
     return capture_name if os.path.isabs(capture_name) else os.path.join(capture_dir, capture_name)
 
 
-def _process_one(row):
+def _process_one(row, boresight_q_cb=None):
     scenario_filename = (row.get('filename') or '').strip()
     q_gt = _normalize_quaternion([
         float(row['qx']),
@@ -170,20 +191,20 @@ def _process_one(row):
             'num_matched': num_matched,
         }
 
-    q_est = _normalize_quaternion(opnav_image.rotation_inertial_to_camera.quaternion)
-    err_deg = _attitude_error_deg(q_est, q_gt)
+    q_ci_est = _normalize_quaternion(opnav_image.rotation_inertial_to_camera.quaternion)
+    err_deg = _attitude_error_deg(q_ci_est, q_gt)
 
-    return {
+    result = {
         'scenario_filename': scenario_filename,
         'captured_image': capture_path,
         'status': 'ok',
         'num_raw': num_raw,
         'num_catalog': num_cat,
         'num_matched': num_matched,
-        'qx_est': q_est[0],
-        'qy_est': q_est[1],
-        'qz_est': q_est[2],
-        'qw_est': q_est[3],
+        'qx_est': q_ci_est[0],
+        'qy_est': q_ci_est[1],
+        'qz_est': q_ci_est[2],
+        'qw_est': q_ci_est[3],
         'qx_gt': q_gt[0],
         'qy_gt': q_gt[1],
         'qz_gt': q_gt[2],
@@ -192,8 +213,26 @@ def _process_one(row):
         'error_arcmin': err_deg * 60.0,
     }
 
+    if boresight_q_cb is not None:
+        q_bi_corrected = _quat_multiply(_quat_inverse(boresight_q_cb), q_ci_est)
+        corrected_err_deg = _attitude_error_deg(q_bi_corrected, q_gt)
+        result.update({
+            'qx_bi_corrected': q_bi_corrected[0],
+            'qy_bi_corrected': q_bi_corrected[1],
+            'qz_bi_corrected': q_bi_corrected[2],
+            'qw_bi_corrected': q_bi_corrected[3],
+            'corrected_error_deg': corrected_err_deg,
+            'corrected_error_arcmin': corrected_err_deg * 60.0,
+            'qx_cb_used': boresight_q_cb[0],
+            'qy_cb_used': boresight_q_cb[1],
+            'qz_cb_used': boresight_q_cb[2],
+            'qw_cb_used': boresight_q_cb[3],
+        })
 
-def main():
+    return result
+
+
+def main(boresight_q_cb=None):
     scenario_csv = getattr(config, 'BATCH_SCENARIO_CSV', getattr(config, 'TRUTH_FILE', None))
     if not scenario_csv or not os.path.exists(scenario_csv):
         print(f"[ERROR] Scenario CSV not found: {scenario_csv}")
@@ -213,7 +252,7 @@ def main():
         name = (row.get('filename') or f'row_{i}').strip()
         print(f"[{i}/{len(rows)}] Processing {name}...")
         try:
-            result = _process_one(row)
+            result = _process_one(row, boresight_q_cb=boresight_q_cb)
         except Exception as e:
             result = {
                 'scenario_filename': name,
@@ -233,6 +272,11 @@ def main():
 
     ok_errors = [r['error_deg'] for r in results if r.get('status') == 'ok' and isinstance(r.get('error_deg'), (float, int))]
     ok_count = len(ok_errors)
+    corrected_ok_errors = [
+        r['corrected_error_deg']
+        for r in results
+        if r.get('status') == 'ok' and isinstance(r.get('corrected_error_deg'), (float, int))
+    ]
 
     print("\n=== Batch Summary ===")
     print(f"Total scenarios: {len(results)}")
@@ -245,6 +289,13 @@ def main():
         print(f"Std attitude error:  {np.std(err):.6f} deg")
         print(f"Median attitude error:{np.median(err):.6f} deg")
         print(f"Min/Max attitude error: {np.min(err):.6f} / {np.max(err):.6f} deg")
+
+    if corrected_ok_errors:
+        corr = np.asarray(corrected_ok_errors, dtype=float)
+        print(f"Mean corrected error: {np.mean(corr):.6f} deg")
+        print(f"Std corrected error:  {np.std(corr):.6f} deg")
+        print(f"Median corrected error:{np.median(corr):.6f} deg")
+        print(f"Min/Max corrected error: {np.min(corr):.6f} / {np.max(corr):.6f} deg")
 
     print(f"Detailed results written to: {output_csv}")
 

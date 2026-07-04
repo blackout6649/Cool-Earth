@@ -83,13 +83,13 @@ PROCESS_IMAGE_PATH = os.path.join(CAPTURED_DIR, 'Single_Scenario_Capture.fits')
 # Calibrated camera model for processing.
 PROC_CAM_N_COLS = 1280
 PROC_CAM_N_ROWS = 1024
-PROC_CAM_FOCAL_LENGTH_PX = 1.1568e3
-PROC_CAM_CENTER_X = 633.4
-PROC_CAM_CENTER_Y = 513.5
+PROC_CAM_FOCAL_LENGTH_PX = 1.1386e3
+PROC_CAM_CENTER_X = 642.0725
+PROC_CAM_CENTER_Y = 515.6352
 # Distortion order is [k1, k2, p1, p2, k3].
 # From calibration: radial=[-0.2042, 0.3663], tangential=[0, 0].
 #PROC_DISTORTION_COEFFS = [-0.2042, 0.3663, 0.0, 0.0, 0.0]
-PROC_DISTORTION_COEFFS = [0.0, 0.0, 0.0, 0.0, 0.0]  # Use this for no distortion in processing.
+PROC_DISTORTION_COEFFS = [-0.2429, 0.2943, 0.0, 0.0, 0.0]  # Use this for no distortion in processing.
 
 # Star ID tuning for processing captured images.
 PROC_MAX_MAGNITUDE = 6.5
