@@ -145,6 +145,20 @@ def _prompt_boresight_quaternion():
     return q_cb
 
 
+def _resolve_boresight_quaternion(boresight_q_cb=None):
+    if boresight_q_cb is not None:
+        return _normalize_quaternion(boresight_q_cb)
+
+    if not bool(getattr(config, 'PROC_USE_BORESIGHT', False)):
+        return None
+
+    configured_q_cb = getattr(config, 'PROC_BORESIGHT_Q_CB', None)
+    if configured_q_cb is None:
+        return None
+
+    return _normalize_quaternion(configured_q_cb)
+
+
 def _read_gt_quaternion_from_fits_header(path):
     if not path:
         return None
@@ -284,14 +298,48 @@ def plot_results(opnav_image, sopnav, img_width=1024, img_height=1024):
     plt.show()
 
 
-def main(boresight_q_cb=None):
+def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=None, min_matches=None, verbose=None):
     _configure_warning_filters()
 
-    verbose = bool(getattr(config, 'PROC_VERBOSE', False))
+    if verbose is None:
+        verbose = bool(getattr(config, 'PROC_VERBOSE', False))
+    else:
+        verbose = bool(verbose)
+
+    if show_plot is None:
+        show_plot = bool(getattr(config, 'PROC_ENABLE_PLOTS', False))
+    else:
+        show_plot = bool(show_plot)
+
+    if min_matches is None:
+        min_matches = int(getattr(config, 'PROC_MIN_MATCHES', 3))
+    else:
+        min_matches = int(min_matches)
+
+    try:
+        resolved_boresight_q_cb = _resolve_boresight_quaternion(boresight_q_cb=boresight_q_cb)
+    except Exception as e:
+        return {
+            'status': 'failed',
+            'message': f'invalid_boresight_quaternion: {e}',
+        }
 
     def _vprint(message):
         if verbose:
             print(message)
+
+    result = {
+        'status': 'failed',
+        'message': 'unknown_failure',
+        'image_path': '',
+        'num_raw': 0,
+        'num_catalog_in_fov': 0,
+        'num_matched': 0,
+        'q_ci': None,
+        'q_bi_corrected': None,
+        'error_deg': None,
+        'corrected_error_deg': None,
+    }
 
     # =========================================================================
     # 1. Setup Camera Model
@@ -319,15 +367,17 @@ def main(boresight_q_cb=None):
     # =========================================================================
     # 2. Load Image & Time
     # =========================================================================
-    image_path = getattr(config, 'PROCESS_IMAGE_PATH', os.path.join(config.IMAGE_DIR, 'Scenario_02.fits'))
+    image_path = image_path or getattr(config, 'PROCESS_IMAGE_PATH', os.path.join(config.IMAGE_DIR, 'Scenario_02.fits'))
     obs_time = getattr(config, 'OBSERVATION_DATE', datetime(2000, 1, 1, 12, 0, 0) + timedelta(seconds=757339269.184))
+    result['image_path'] = image_path
 
     print(f"Loading image: {image_path}")
     try:
         opnav_image = OpNavImage(image_path, observation_date=obs_time)
     except FileNotFoundError:
         print(f"\n[ERROR] Could not find {image_path}. Run MATLAB script first.")
-        return
+        result['message'] = 'image_not_found'
+        return result
 
     # --- A Priori Attitude Setup ---
     initial_quaternion, init_source = _resolve_initial_quaternion(image_path)
@@ -343,7 +393,8 @@ def main(boresight_q_cb=None):
         sopnav_options.star_id_options.catalog = Gaia()
     except Exception as e:
         print(f"[ERROR] Catalog Init Failed: {e}")
-        return
+        result['message'] = f'catalog_init_failed: {e}'
+        return result
 
     sopnav = StellarOpNav(camera_obj, options=sopnav_options)
     sopnav.add_images([opnav_image])
@@ -390,15 +441,18 @@ def main(boresight_q_cb=None):
         matched_points = sopnav.matched_extracted_image_points[0]
         num_raw = safe_get_count(raw_points)
         num_matched = safe_get_count(matched_points)
+        result['num_raw'] = int(num_raw)
+        result['num_matched'] = int(num_matched)
 
         # --- VISUALIZATION CALL ---
-        _vprint("Generating visual comparison...")
-        plot_results(
-            opnav_image,
-            sopnav,
-            img_width=int(getattr(config, 'PROC_CAM_N_COLS', 1024)),
-            img_height=int(getattr(config, 'PROC_CAM_N_ROWS', 1024)),
-        )
+        if show_plot:
+            _vprint("Generating visual comparison...")
+            plot_results(
+                opnav_image,
+                sopnav,
+                img_width=int(getattr(config, 'PROC_CAM_N_COLS', 1024)),
+                img_height=int(getattr(config, 'PROC_CAM_N_ROWS', 1024)),
+            )
         # --------------------------
 
         num_cat_in_fov = 0
@@ -409,6 +463,7 @@ def main(boresight_q_cb=None):
             )
             num_cat_in_fov = np.sum(in_fov_mask)
             projected_catalog_in_fov = projected_catalog[:, in_fov_mask]
+            result['num_catalog_in_fov'] = int(num_cat_in_fov)
 
         print(f"Detected spots: {num_raw} | Catalog in FOV: {num_cat_in_fov} | Matched stars: {num_matched}")
 
@@ -417,15 +472,17 @@ def main(boresight_q_cb=None):
             distances = cdist(raw_points.T, projected_catalog_in_fov.T, metric='euclidean')
             _vprint(f"Overall min distance: {np.min(distances):.2f} pixels")
 
-        if num_matched < 3:
+        if num_matched < min_matches:
             print("[WARNING] Not enough matched stars.")
-            return
+            result['message'] = 'not_enough_matches'
+            return result
 
     except Exception as e:
         print(f"[ERROR] Star Identification failed: {e}")
         if verbose:
             traceback.print_exc()
-        return
+        result['message'] = f'star_identification_failed: {e}'
+        return result
 
     # B. Estimate Attitude
     _vprint("\n2. Estimating Attitude...")
@@ -434,12 +491,14 @@ def main(boresight_q_cb=None):
 
         if opnav_image.pointing_post_fit:
             q_ci = _normalize_quaternion(opnav_image.rotation_inertial_to_camera.quaternion)
+            result['q_ci'] = q_ci.tolist()
             print(f"Refined Quaternion q^C_I: {q_ci}")
 
             q_bi_corrected = None
-            if boresight_q_cb is not None:
-                q_bi_corrected = _quat_multiply(_quat_inverse(boresight_q_cb), q_ci)
-                print(f"Boresight q^C_B: {boresight_q_cb}")
+            if resolved_boresight_q_cb is not None:
+                q_bi_corrected = _quat_multiply(_quat_inverse(resolved_boresight_q_cb), q_ci)
+                result['q_bi_corrected'] = q_bi_corrected.tolist()
+                print(f"Boresight q^C_B: {resolved_boresight_q_cb}")
                 print(f"Corrected Quaternion q^B_I = (q^C_B)^-1 q^C_I: {q_bi_corrected}")
 
             if bool(getattr(config, 'PROC_REPORT_ATTITUDE_ERROR', True)):
@@ -449,26 +508,47 @@ def main(boresight_q_cb=None):
                     print("       Set config.PROC_GT_QUATERNION or ensure Q_X/Q_Y/Q_Z/Q_W in config.PROC_GT_IMAGE_PATH FITS header.")
                 else:
                     err_deg = _attitude_error_deg(q_ci, q_gt)
+                    result['error_deg'] = float(err_deg)
                     err_arcmin = err_deg * 60.0
                     print(f"Ground Truth Quaternion ({gt_source}): {q_gt}")
                     print(f"Camera-vs-GT Error: {err_deg:.6f} deg ({err_arcmin:.3f} arcmin)")
                     if q_bi_corrected is not None:
                         corrected_err_deg = _attitude_error_deg(q_bi_corrected, q_gt)
+                        result['corrected_error_deg'] = float(corrected_err_deg)
                         corrected_err_arcmin = corrected_err_deg * 60.0
                         print(
                             f"Corrected Body-vs-GT Error: {corrected_err_deg:.6f} deg "
                             f"({corrected_err_arcmin:.3f} arcmin)"
                         )
+            result['status'] = 'ok'
+            result['message'] = 'success'
         else:
             print("\n[ERROR] Attitude estimation failed.")
+            result['message'] = 'no_post_fit_solution'
 
     except Exception as e:
         print(f"[ERROR] Attitude Estimation failed: {e}")
+        result['message'] = f'attitude_estimation_failed: {e}'
+
+    return result
+
+
+def main(boresight_q_cb=None):
+    return run_single_image_pipeline(boresight_q_cb=boresight_q_cb)
 
 
 if __name__ == "__main__":
     _configure_warning_filters()
-    boresight_q_cb = _prompt_boresight_quaternion()
+    boresight_q_cb = None
+    if bool(getattr(config, 'PROC_INTERACTIVE_PROMPTS', False)):
+        boresight_q_cb = _prompt_boresight_quaternion()
+    else:
+        try:
+            boresight_q_cb = _resolve_boresight_quaternion()
+        except Exception as e:
+            print(f"[ERROR] Invalid boresight config: {e}")
+            boresight_q_cb = None
+
     mode = str(getattr(config, 'PROC_MODE', 'single')).strip().lower()
     if mode == 'batch':
         import batch_attitude_analysis

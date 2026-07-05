@@ -70,7 +70,7 @@ DISPLAY_GAMMA = 2.2
 # =============================================================================
 # Controls both display (single image vs series) and processing (single vs batch).
 # 'single' = one image  |  'batch' = all scenarios from scenarios.csv
-PROC_MODE = 'batch'  # 'single' | 'batch'
+PROC_MODE = 'single'  # 'single' | 'batch'
 
 
 # =============================================================================
@@ -112,7 +112,7 @@ PROC_POI_REJECT_SATURATION = False
 
 # A-priori attitude for the solver.
 PROC_INITIAL_QUATERNION = [-0.704416026, 0.061628417, 0.0, 0.707106781]
-PROC_USE_SCENARIO_CSV_INITIAL_QUAT = True
+PROC_USE_SCENARIO_CSV_INITIAL_QUAT = False
 PROC_SCENARIO_CSV = TRUTH_FILE
 # Optional explicit scenario filename key from scenarios.csv (for single-image runs).
 PROC_SCENARIO_FILENAME = None
@@ -122,7 +122,16 @@ PROC_SCENARIO_FILENAME = None
 # from PROC_GT_IMAGE_PATH FITS header (default: displayed image path).
 PROC_GT_QUATERNION = None
 PROC_GT_IMAGE_PATH = DISPLAY_IMAGE_PATH
-PROC_REPORT_ATTITUDE_ERROR = True
+PROC_REPORT_ATTITUDE_ERROR = False
+
+# Optional boresight correction (for HITL): q^B_I = (q^C_B)^-1 q^C_I
+PROC_USE_BORESIGHT = False
+PROC_BORESIGHT_Q_CB = [0.0, 0.0, 0.0, 1.0]
+
+# Runtime behavior controls.
+PROC_INTERACTIVE_PROMPTS = False
+PROC_ENABLE_PLOTS = False
+PROC_MIN_MATCHES = 3
 
 
 # =============================================================================
