@@ -235,6 +235,48 @@ def _resolve_initial_quaternion(process_image_path):
 
 
 # =========================================================================
+# SUN-POINTING FRAME HELPERS
+# =========================================================================
+
+# Earth's mean angular velocity around the sun (rad/s)
+_OMEGA_EARTH_RAD_PER_S = 2.0 * np.pi / (365.25 * 24.0 * 3600.0)
+
+
+def _compute_sun_pointing_dcm(lam):
+    """
+    Rotation DCM from HCI to Sun-Pointing (SP) frame.
+
+    C_HCI^SP(lambda) = [[ sin(l), -cos(l), 0 ],
+                        [ 0,       0,      1 ],
+                        [-cos(l), -sin(l), 0 ]]
+
+    Args:
+        lam: Ecliptic longitude lambda (radians).
+
+    Returns:
+        3x3 numpy array.
+    """
+    sl, cl = np.sin(lam), np.cos(lam)
+    return np.array([
+        [ sl, -cl, 0.0],
+        [ 0.0, 0.0, 1.0],
+        [-cl, -sl, 0.0],
+    ], dtype=float)
+
+
+def _quat_to_dcm(q):
+    """Convert a quaternion [x, y, z, w] to a 3x3 rotation DCM."""
+    from scipy.spatial.transform import Rotation as _ScipyRot
+    return _ScipyRot.from_quat(_normalize_quaternion(q)).as_matrix()
+
+
+def _dcm_to_quaternion(R):
+    """Convert a 3x3 rotation DCM to a normalized quaternion [x, y, z, w]."""
+    from scipy.spatial.transform import Rotation as _ScipyRot
+    return _normalize_quaternion(_ScipyRot.from_matrix(R).as_quat())
+
+
+# =========================================================================
 # NEW VISUALIZATION FUNCTION
 # =========================================================================
 def plot_results(opnav_image, sopnav, img_width=1024, img_height=1024):
@@ -298,7 +340,7 @@ def plot_results(opnav_image, sopnav, img_width=1024, img_height=1024):
     plt.show()
 
 
-def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=None, min_matches=None, verbose=None):
+def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=None, min_matches=None, verbose=None, t=0.0, lambda_0=0.0):
     _configure_warning_filters()
 
     if verbose is None:
@@ -324,6 +366,10 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
             'message': f'invalid_boresight_quaternion: {e}',
         }
 
+    # Ecliptic longitude at time t: lambda(t) = lambda_0 + omega_earth * t
+    # lambda_0 is accepted in degrees and converted to radians internally.
+    lambda_val = np.radians(float(lambda_0)) + _OMEGA_EARTH_RAD_PER_S * float(t)
+
     def _vprint(message):
         if verbose:
             print(message)
@@ -336,6 +382,7 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
         'num_catalog_in_fov': 0,
         'num_matched': 0,
         'q_ci': None,
+        'q_ci_SunPointing': None,
         'q_bi_corrected': None,
         'error_deg': None,
         'corrected_error_deg': None,
@@ -493,6 +540,13 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
             q_ci = _normalize_quaternion(opnav_image.rotation_inertial_to_camera.quaternion)
             result['q_ci'] = q_ci.tolist()
             print(f"Refined Quaternion q^C_I: {q_ci}")
+
+            # Sun-Pointing frame attitude: R^C_SP = R^C_I @ (C_HCI^SP)^T
+            _dcm_hci_sp = _compute_sun_pointing_dcm(lambda_val)
+            _R_c_sp = _quat_to_dcm(q_ci) @ _dcm_hci_sp.T
+            q_ci_sp = _dcm_to_quaternion(_R_c_sp)
+            result['q_ci_SunPointing'] = q_ci_sp.tolist()
+            print(f"Sun-Pointing Quaternion q^C_SP (lambda={np.degrees(lambda_val):.4f} deg): {q_ci_sp}")
 
             q_bi_corrected = None
             if resolved_boresight_q_cb is not None:
