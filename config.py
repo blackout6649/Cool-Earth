@@ -133,6 +133,10 @@ PROC_INTERACTIVE_PROMPTS = False
 PROC_ENABLE_PLOTS = False
 PROC_MIN_MATCHES = 3
 
+# Show a blocking popup of matched stars after each OpNav id_stars() call.
+# Can be overridden at runtime from StateMachine.py via OPNAV_SHOW_MATCHED_STARS.
+PROC_SHOW_MATCHED_STARS_POPUP = False
+
 
 # =============================================================================
 # 4) BATCH EVALUATION SETTINGS (MULTI-IMAGE STATISTICS)

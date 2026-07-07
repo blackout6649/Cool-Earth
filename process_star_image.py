@@ -340,7 +340,7 @@ def plot_results(opnav_image, sopnav, img_width=1024, img_height=1024):
     plt.show()
 
 
-def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=None, min_matches=None, verbose=None, t=0.0, lambda_0=0.0):
+def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=None, min_matches=None, verbose=None, t=0.0, lambda_0=0.0, show_matched_stars_popup=None):
     _configure_warning_filters()
 
     if verbose is None:
@@ -369,6 +369,11 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
     # Ecliptic longitude at time t: lambda(t) = lambda_0 + omega_earth * t
     # lambda_0 is accepted in degrees and converted to radians internally.
     lambda_val = np.radians(float(lambda_0)) + _OMEGA_EARTH_RAD_PER_S * float(t)
+
+    if show_matched_stars_popup is None:
+        show_matched_stars_popup = bool(getattr(config, 'PROC_SHOW_MATCHED_STARS_POPUP', False))
+    else:
+        show_matched_stars_popup = bool(show_matched_stars_popup)
 
     def _vprint(message):
         if verbose:
@@ -513,6 +518,17 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
             result['num_catalog_in_fov'] = int(num_cat_in_fov)
 
         print(f"Detected spots: {num_raw} | Catalog in FOV: {num_cat_in_fov} | Matched stars: {num_matched}")
+
+        # --- MATCHED STARS POPUP ---
+        if show_matched_stars_popup:
+            import plot_matched_stars as _pms
+            _pms.show_matched_stars(
+                opnav_image, sopnav,
+                img_width=int(getattr(config, 'PROC_CAM_N_COLS', 1024)),
+                img_height=int(getattr(config, 'PROC_CAM_N_ROWS', 1024)),
+                title_suffix=os.path.basename(image_path),
+            )
+        # ---------------------------
 
         # Calculate distances for console output
         if num_raw > 0 and num_cat_in_fov > 0 and raw_points.ndim == 2:
