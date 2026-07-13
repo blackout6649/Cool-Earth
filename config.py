@@ -133,8 +133,11 @@ PROC_INTERACTIVE_PROMPTS = False
 PROC_ENABLE_PLOTS = False
 PROC_MIN_MATCHES = 3
 
-# Obliquity used for the intermediate J2000 -> HCI frame transform in process_star_image.
+# Euler-angle constants for the J2000 -> true HCI transform in process_star_image.
+# C_J2000^HCI = R_x(i) @ R_z(Omega) @ R_x(epsilon)
 PROC_J2000_TO_HCI_OBLIQUITY_DEG = 23.439291111
+PROC_J2000_TO_HCI_ASCENDING_NODE_LONGITUDE_DEG = 75.76
+PROC_J2000_TO_HCI_SOLAR_INCLINATION_DEG = 7.25
 
 # Show a blocking popup of matched stars after each OpNav id_stars() call.
 # Can be overridden at runtime from StateMachine.py via OPNAV_SHOW_MATCHED_STARS.

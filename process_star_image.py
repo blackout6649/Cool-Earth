@@ -240,28 +240,74 @@ def _resolve_initial_quaternion(process_image_path):
 
 # Earth's mean angular velocity around the sun (rad/s)
 _OMEGA_EARTH_RAD_PER_S = 2.0 * np.pi / (365.25 * 24.0 * 3600.0)
-# Mean obliquity (deg) for J2000 <-> HCI frame transform.
+# J2000 -> true HCI Euler-angle constants (deg).
 _J2000_OBLIQUITY_DEG = 23.439291111
+_HCI_ASCENDING_NODE_LONGITUDE_DEG = 75.76
+_HCI_SOLAR_INCLINATION_DEG = 7.25
 
 
-def _compute_j2000_to_hci_dcm(obliquity_deg=None):
+def _compute_j2000_to_hci_dcm(obliquity_deg=None, ascending_node_longitude_deg=None, solar_inclination_deg=None):
     """
     Rotation DCM from J2000 to HCI frame.
 
-    C_J2000^HCI(eps) = R_x(eps)
+    True HCI is formed with a 1-3-1 (X-Z-X) intrinsic sequence:
 
-    where eps is the obliquity of the ecliptic.
+    C_J2000^HCI = R_x(i) @ R_z(Omega) @ R_x(eps)
+
+    where
+      eps   is Earth's obliquity,
+      Omega is the solar ascending-node longitude on the ecliptic,
+      i     is solar equator inclination relative to the ecliptic.
+
+    The R_x and R_z matrices follow frame-rotation convention:
+        R_x(a) = [[1, 0, 0],
+                  [0, cos(a), sin(a)],
+                  [0, -sin(a), cos(a)]]
+        R_z(a) = [[cos(a), sin(a), 0],
+                  [-sin(a), cos(a), 0],
+                  [0, 0, 1]]
 
     Args:
-        obliquity_deg: Optional obliquity override in degrees.
+        obliquity_deg: Optional eps override in degrees.
+        ascending_node_longitude_deg: Optional Omega override in degrees.
+        solar_inclination_deg: Optional i override in degrees.
 
     Returns:
         3x3 numpy array.
     """
-    from scipy.spatial.transform import Rotation as _ScipyRot
-
     eps_deg = _J2000_OBLIQUITY_DEG if obliquity_deg is None else float(obliquity_deg)
-    return _ScipyRot.from_euler('x', np.radians(eps_deg)).as_matrix()
+    omega_deg = (
+        _HCI_ASCENDING_NODE_LONGITUDE_DEG
+        if ascending_node_longitude_deg is None
+        else float(ascending_node_longitude_deg)
+    )
+    inc_deg = _HCI_SOLAR_INCLINATION_DEG if solar_inclination_deg is None else float(solar_inclination_deg)
+
+    eps = np.radians(eps_deg)
+    omega = np.radians(omega_deg)
+    inc = np.radians(inc_deg)
+
+    ce, se = np.cos(eps), np.sin(eps)
+    co, so = np.cos(omega), np.sin(omega)
+    ci, si = np.cos(inc), np.sin(inc)
+
+    rx_eps = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, ce, se],
+        [0.0, -se, ce],
+    ], dtype=float)
+    rz_omega = np.array([
+        [co, so, 0.0],
+        [-so, co, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=float)
+    rx_inc = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, ci, si],
+        [0.0, -si, ci],
+    ], dtype=float)
+
+    return rx_inc @ rz_omega @ rx_eps
 
 
 def _compute_hci_to_sun_pointing_prime_dcm(lam):
@@ -616,7 +662,17 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
             # J2000 -> HCI -> SP' -> SP
             # R^C_SP = R^C_J2000 @ (C_J2000^HCI)^T @ (C_HCI^SP)^T
             _dcm_j2000_hci = _compute_j2000_to_hci_dcm(
-                obliquity_deg=getattr(config, 'PROC_J2000_TO_HCI_OBLIQUITY_DEG', _J2000_OBLIQUITY_DEG)
+                obliquity_deg=getattr(config, 'PROC_J2000_TO_HCI_OBLIQUITY_DEG', _J2000_OBLIQUITY_DEG),
+                ascending_node_longitude_deg=getattr(
+                    config,
+                    'PROC_J2000_TO_HCI_ASCENDING_NODE_LONGITUDE_DEG',
+                    _HCI_ASCENDING_NODE_LONGITUDE_DEG,
+                ),
+                solar_inclination_deg=getattr(
+                    config,
+                    'PROC_J2000_TO_HCI_SOLAR_INCLINATION_DEG',
+                    _HCI_SOLAR_INCLINATION_DEG,
+                ),
             )
             _dcm_hci_sp = _compute_sun_pointing_dcm(lambda_val)
             _R_c_sp = _quat_to_dcm(q_ci) @ _dcm_j2000_hci.T @ _dcm_hci_sp.T
