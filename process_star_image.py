@@ -240,15 +240,39 @@ def _resolve_initial_quaternion(process_image_path):
 
 # Earth's mean angular velocity around the sun (rad/s)
 _OMEGA_EARTH_RAD_PER_S = 2.0 * np.pi / (365.25 * 24.0 * 3600.0)
+# Mean obliquity (deg) for J2000 <-> HCI frame transform.
+_J2000_OBLIQUITY_DEG = 23.439291111
 
 
-def _compute_sun_pointing_dcm(lam):
+def _compute_j2000_to_hci_dcm(obliquity_deg=None):
     """
-    Rotation DCM from HCI to Sun-Pointing (SP) frame.
+    Rotation DCM from J2000 to HCI frame.
 
-    C_HCI^SP(lambda) = [[ sin(l), -cos(l), 0 ],
-                        [ 0,       0,      1 ],
-                        [-cos(l), -sin(l), 0 ]]
+    C_J2000^HCI(eps) = R_x(eps)
+
+    where eps is the obliquity of the ecliptic.
+
+    Args:
+        obliquity_deg: Optional obliquity override in degrees.
+
+    Returns:
+        3x3 numpy array.
+    """
+    from scipy.spatial.transform import Rotation as _ScipyRot
+
+    eps_deg = _J2000_OBLIQUITY_DEG if obliquity_deg is None else float(obliquity_deg)
+    return _ScipyRot.from_euler('x', np.radians(eps_deg)).as_matrix()
+
+
+def _compute_hci_to_sun_pointing_prime_dcm(lam):
+    """
+    Rotation DCM from HCI to intermediate Sun-Pointing prime (SP') frame.
+
+    SP' is defined by rotating frame axes about HCI z by lambda, such that x' points to the sun.
+
+    C_HCI^SP'(lambda) = [[ cos(l),  sin(l), 0 ],
+                         [-sin(l),  cos(l), 0 ],
+                         [ 0,       0,      1 ]]
 
     Args:
         lam: Ecliptic longitude lambda (radians).
@@ -258,10 +282,41 @@ def _compute_sun_pointing_dcm(lam):
     """
     sl, cl = np.sin(lam), np.cos(lam)
     return np.array([
-        [ sl, -cl, 0.0],
+        [ cl,  sl, 0.0],
+        [-sl,  cl, 0.0],
         [ 0.0, 0.0, 1.0],
-        [-cl, -sl, 0.0],
     ], dtype=float)
+
+
+def _compute_sun_pointing_prime_to_sun_pointing_dcm():
+    """
+    Rotation DCM from SP' to final Sun-Pointing (SP) frame.
+
+    This is a +90 degree rotation about the SP' y' axis.
+
+    C_SP'^SP = R_y(+90 deg)
+
+    Returns:
+        3x3 numpy array.
+    """
+    from scipy.spatial.transform import Rotation as _ScipyRot
+
+    return _ScipyRot.from_euler('y', np.pi / 2.0).as_matrix()
+
+
+def _compute_sun_pointing_dcm(lam):
+    """
+    Rotation DCM from HCI to final Sun-Pointing (SP) frame.
+
+    This is composed as:
+    C_HCI^SP(lambda) = C_SP'^SP @ C_HCI^SP'(lambda)
+
+    Returns:
+        3x3 numpy array.
+    """
+    dcm_hci_sp_prime = _compute_hci_to_sun_pointing_prime_dcm(lam)
+    dcm_sp_prime_sp = _compute_sun_pointing_prime_to_sun_pointing_dcm()
+    return dcm_sp_prime_sp @ dcm_hci_sp_prime
 
 
 def _quat_to_dcm(q):
@@ -557,9 +612,14 @@ def run_single_image_pipeline(image_path=None, boresight_q_cb=None, show_plot=No
             result['q_ci'] = q_ci.tolist()
             print(f"Refined Quaternion q^C_I: {q_ci}")
 
-            # Sun-Pointing frame attitude: R^C_SP = R^C_I @ (C_HCI^SP)^T
+            # Sun-Pointing frame attitude with explicit chain:
+            # J2000 -> HCI -> SP' -> SP
+            # R^C_SP = R^C_J2000 @ (C_J2000^HCI)^T @ (C_HCI^SP)^T
+            _dcm_j2000_hci = _compute_j2000_to_hci_dcm(
+                obliquity_deg=getattr(config, 'PROC_J2000_TO_HCI_OBLIQUITY_DEG', _J2000_OBLIQUITY_DEG)
+            )
             _dcm_hci_sp = _compute_sun_pointing_dcm(lambda_val)
-            _R_c_sp = _quat_to_dcm(q_ci) @ _dcm_hci_sp.T
+            _R_c_sp = _quat_to_dcm(q_ci) @ _dcm_j2000_hci.T @ _dcm_hci_sp.T
             q_ci_sp = _dcm_to_quaternion(_R_c_sp)
             result['q_ci_SunPointing'] = q_ci_sp.tolist()
             print(f"Sun-Pointing Quaternion q^C_SP (lambda={np.degrees(lambda_val):.4f} deg): {q_ci_sp}")

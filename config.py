@@ -133,6 +133,9 @@ PROC_INTERACTIVE_PROMPTS = False
 PROC_ENABLE_PLOTS = False
 PROC_MIN_MATCHES = 3
 
+# Obliquity used for the intermediate J2000 -> HCI frame transform in process_star_image.
+PROC_J2000_TO_HCI_OBLIQUITY_DEG = 23.439291111
+
 # Show a blocking popup of matched stars after each OpNav id_stars() call.
 # Can be overridden at runtime from StateMachine.py via OPNAV_SHOW_MATCHED_STARS.
 PROC_SHOW_MATCHED_STARS_POPUP = False
